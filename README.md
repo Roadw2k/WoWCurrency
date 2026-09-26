@@ -2,6 +2,10 @@
 
 WoW Currency is a lightweight currency dashboard for Retail, Classic Era, and Mists of Pandaria Classic. 
 
+## Screenshot
+
+[WoWCurrency](WoWCurrency.png)
+
 ## Features
 
 - Displays character gold on every supported client
