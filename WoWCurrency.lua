@@ -582,7 +582,7 @@ local function CreateMainFrame()
 
     frame.footer = CreateFont(frame, 10, {0.47, 0.43, 0.36})
     frame.footer:SetPoint("BOTTOMLEFT", 16, 15)
-    frame.footer:SetText("Hover a currency for details.")
+    frame.footer:SetText("Hover a currency for details.     -     Made by Roadw2k")
 
     frame:Hide()
 end
