@@ -4,7 +4,8 @@ WoW Currency is a lightweight currency dashboard for Retail, Classic Era, and Mi
 
 ## Screenshot
 
-![WoWCurrency](WoWCurrency.png)
+![WoWCurrency](WoWCurrency1.png)
+![WoWCurrency](WowCurrency2.png)
 
 ## Features
 
