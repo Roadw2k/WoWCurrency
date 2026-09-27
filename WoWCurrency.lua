@@ -17,7 +17,10 @@ local state = {
     visibleRows = {},
     currencies = {},
     search = "",
-    category = "All",
+    selectedCategories = {},
+    autoCategories = {},
+    filterMode = "MANUAL",
+    autoExpansion = nil,
     sort = "name",
     ascending = true,
 }
@@ -73,6 +76,14 @@ local function GetCurrencyListSizeCompat()
     return 0
 end
 
+local function ExpandCurrencyHeaderCompat(index)
+    if C_CurrencyInfo and C_CurrencyInfo.ExpandCurrencyList then
+        C_CurrencyInfo.ExpandCurrencyList(index, true)
+    elseif ExpandCurrencyList then
+        ExpandCurrencyList(index, true)
+    end
+end
+
 local function GetCurrencyInfoCompat(index)
     if C_CurrencyInfo and C_CurrencyInfo.GetCurrencyListInfo then
         local info = C_CurrencyInfo.GetCurrencyListInfo(index)
@@ -109,8 +120,6 @@ local function GetCurrencyInfoCompat(index)
             quantity = count,
             iconFileID = icon,
             maxQuantity = max,
-            -- The legacy API reports whether a weekly limit exists, but not
-            -- the value of that limit. Do not mistake later return values for it.
             maxWeeklyQuantity = 0,
             quantityEarnedThisWeek = canEarnPerWeek and earnedThisWeek or 0,
             discovered = true,
@@ -139,11 +148,16 @@ local function GetCurrencyDetailsCompat(index, info)
     }
 end
 
+local function NormalizeCategory(category)
+    if category == "Features" or category == "Season 2" then
+        return "Midnight"
+    end
+    return category
+end
+
 local function CollectCurrencies()
     wipe(state.currencies)
 
-    -- Coin is the only universal currency and is especially important on
-    -- Classic clients, where the currency-list API may not exist at all.
     local money = GetMoney and GetMoney() or 0
     state.currencies[#state.currencies + 1] = {
         index = 0,
@@ -161,13 +175,16 @@ local function CollectCurrencies()
     }
 
     local category = "General"
-    local size = GetCurrencyListSizeCompat()
+    local index = 1
 
-    for index = 1, size do
+    while index <= GetCurrencyListSizeCompat() do
         local info = GetCurrencyInfoCompat(index)
         if info and info.name then
             if info.isHeader then
-                category = info.name
+                category = NormalizeCategory(info.name)
+                if info.isHeaderExpanded == false then
+                    ExpandCurrencyHeaderCompat(index)
+                end
             elseif not info.isTypeUnused and info.discovered ~= false then
                 local details = GetCurrencyDetailsCompat(index, info)
                 state.currencies[#state.currencies + 1] = {
@@ -190,6 +207,7 @@ local function CollectCurrencies()
                 }
             end
         end
+        index = index + 1
     end
 end
 
@@ -209,8 +227,81 @@ local function GetCategories()
     return categories
 end
 
+local EXPANSION_ZONES = {
+    {label = "Midnight", maps = {"quel'thalas", "eversong woods", "zul'aman", "harandar", "voidstorm"}, categories = {"midnight"}},
+    {label = "The War Within", maps = {"khaz algar", "isle of dorn", "ringing deeps", "hallowfall", "azj-kahet", "undermine", "k'aresh"}, categories = {"war within", "khaz algar"}},
+    {label = "Dragonflight", maps = {"dragon isles", "zaralek cavern", "emerald dream"}, categories = {"dragonflight", "dragon isles"}},
+    {label = "Shadowlands", maps = {"shadowlands", "oribos", "the maw", "zereth mortis"}, categories = {"shadowlands"}},
+    {label = "Battle for Azeroth", maps = {"kul tiras", "zandalar", "nazjatar", "mechagon"}, categories = {"battle for azeroth", "bfa"}},
+    {label = "Legion", maps = {"broken isles", "argus"}, categories = {"legion"}},
+    {label = "Warlords of Draenor", maps = {"draenor"}, categories = {"warlords of draenor", "draenor"}},
+    {label = "Mists of Pandaria", maps = {"pandaria"}, categories = {"mists of pandaria", "pandaria"}},
+    {label = "Wrath of the Lich King", maps = {"northrend"}, categories = {"wrath of the lich king", "northrend"}},
+    {label = "Burning Crusade", maps = {"outland"}, categories = {"burning crusade", "outland"}},
+}
+
+local function GetZoneExpansion()
+    if not (C_Map and C_Map.GetBestMapForUnit and C_Map.GetMapInfo) then return nil end
+    local mapID = C_Map.GetBestMapForUnit("player")
+    local visited = {}
+    while mapID and not visited[mapID] do
+        visited[mapID] = true
+        local info = C_Map.GetMapInfo(mapID)
+        if not info then break end
+        local mapName = (info.name or ""):lower()
+        for _, expansion in ipairs(EXPANSION_ZONES) do
+            for _, name in ipairs(expansion.maps) do
+                if mapName == name or mapName:find(name, 1, true) then return expansion end
+            end
+        end
+        mapID = info.parentMapID
+    end
+end
+
+local function UpdateAutoCategories()
+    wipe(state.autoCategories)
+    local expansion = GetZoneExpansion()
+    state.autoExpansion = expansion and expansion.label or nil
+    if not expansion then return end
+
+    for _, category in ipairs(GetCategories()) do
+        local lowerCategory = category:lower()
+        for _, pattern in ipairs(expansion.categories) do
+            if lowerCategory:find(pattern, 1, true) then
+                state.autoCategories[category] = true
+                break
+            end
+        end
+    end
+end
+
+local function GetActiveCategories()
+    if state.filterMode == "AUTO" and state.autoExpansion then return state.autoCategories end
+    return state.selectedCategories
+end
+
+local function GetCategoryFilterLabel()
+    if state.filterMode == "AUTO" then
+        return state.autoExpansion or "All zones"
+    end
+
+    local count, selected = 0, nil
+    for category in pairs(state.selectedCategories) do
+        count = count + 1
+        selected = category
+    end
+    if count == 0 then return "All" end
+    if count == 1 then return selected end
+    return count .. " categories"
+end
+
 local function MatchesFilters(currency)
-    if state.category ~= "All" and currency.category ~= state.category then return false end
+    local activeCategories = GetActiveCategories()
+    if state.filterMode == "AUTO" and state.autoExpansion then
+        if not activeCategories[currency.category] then return false end
+    elseif next(activeCategories) and not activeCategories[currency.category] then
+        return false
+    end
     local query = state.search:lower()
     if query ~= "" and not currency.name:lower():find(query, 1, true) and not currency.category:lower():find(query, 1, true) then
         return false
@@ -369,8 +460,10 @@ end
 
 local function Refresh()
     CollectCurrencies()
+    UpdateAutoCategories()
     if Addon.frame then
-        Addon.frame.categoryButton.text:SetText(state.category)
+        Addon.frame.categoryButton.text:SetText(GetCategoryFilterLabel())
+        Addon.frame.modeButton.text:SetText(state.filterMode == "AUTO" and "Auto" or "Manual")
         UpdateRows()
     end
 end
@@ -482,7 +575,7 @@ local function CreateMainFrame()
     frame.close:SetScript("OnClick", function() frame:Hide() end)
 
     frame.search = CreateFrame("EditBox", nil, frame, "BackdropTemplate")
-    frame.search:SetSize(250, 30)
+    frame.search:SetSize(190, 30)
     frame.search:SetPoint("TOPLEFT", 15, -82)
     frame.search:SetAutoFocus(false)
     frame.search:SetFontObject(GameFontHighlightSmall)
@@ -503,32 +596,72 @@ local function CreateMainFrame()
     frame.search:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
     frame.search:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
 
-    frame.categoryButton = CreateButton(frame, "All", 175)
+    frame.categoryButton = CreateButton(frame, "All", 145)
     frame.categoryButton:SetPoint("LEFT", frame.search, "RIGHT", 10, 0)
     frame.categoryButton:SetScript("OnClick", function(self)
+        if state.filterMode == "AUTO" then
+            state.filterMode = "MANUAL"
+            WoWCurrencyDB.filterMode = state.filterMode
+            frame.modeButton.text:SetText("Manual")
+            self.text:SetText(GetCategoryFilterLabel())
+        end
         if MenuUtil and MenuUtil.CreateContextMenu then
             MenuUtil.CreateContextMenu(self, function(_, root)
-                root:CreateTitle("Currency category")
+                root:CreateTitle("Currency categories")
+                root:CreateCheckbox("All", function()
+                    return not next(state.selectedCategories)
+                end, function()
+                    wipe(state.selectedCategories)
+                    WoWCurrencyDB.manualCategories = state.selectedCategories
+                    self.text:SetText(GetCategoryFilterLabel())
+                    UpdateRows()
+                end)
+                root:CreateDivider()
                 for _, category in ipairs(GetCategories()) do
-                    root:CreateRadio(category, function() return state.category == category end, function()
-                        state.category = category
-                        self.text:SetText(category)
-                        UpdateRows()
-                    end)
+                    if category ~= "All" then
+                        local currentCategory = category
+                        root:CreateCheckbox(currentCategory, function()
+                            return state.selectedCategories[currentCategory] == true
+                        end, function()
+                            state.selectedCategories[currentCategory] = not state.selectedCategories[currentCategory] or nil
+                            WoWCurrencyDB.manualCategories = state.selectedCategories
+                            self.text:SetText(GetCategoryFilterLabel())
+                            UpdateRows()
+                        end)
+                    end
                 end
             end)
         else
+
             local categories = GetCategories()
+            local current = GetCategoryFilterLabel()
             local nextIndex = 1
-            for i, value in ipairs(categories) do if value == state.category then nextIndex = i % #categories + 1 break end end
-            state.category = categories[nextIndex]
-            self.text:SetText(state.category)
+            for i, value in ipairs(categories) do
+                if value == current then nextIndex = i % #categories + 1 break end
+            end
+            wipe(state.selectedCategories)
+            if categories[nextIndex] ~= "All" then
+                state.selectedCategories[categories[nextIndex]] = true
+            end
+            WoWCurrencyDB.manualCategories = state.selectedCategories
+            self.text:SetText(GetCategoryFilterLabel())
             UpdateRows()
         end
     end)
 
-    frame.refresh = CreateButton(frame, "Refresh", 90)
-    frame.refresh:SetPoint("LEFT", frame.categoryButton, "RIGHT", 10, 0)
+    frame.modeButton = CreateButton(frame, state.filterMode == "AUTO" and "Auto" or "Manual", 80)
+    frame.modeButton:SetPoint("LEFT", frame.categoryButton, "RIGHT", 10, 0)
+    frame.modeButton:SetScript("OnClick", function(self)
+        state.filterMode = state.filterMode == "AUTO" and "MANUAL" or "AUTO"
+        WoWCurrencyDB.filterMode = state.filterMode
+        self.text:SetText(state.filterMode == "AUTO" and "Auto" or "Manual")
+        UpdateAutoCategories()
+        frame.categoryButton.text:SetText(GetCategoryFilterLabel())
+        UpdateRows()
+    end)
+
+    frame.refresh = CreateButton(frame, "Refresh", 80)
+    frame.refresh:SetPoint("LEFT", frame.modeButton, "RIGHT", 10, 0)
     frame.refresh:SetScript("OnClick", Refresh)
 
     frame.count = CreateFont(frame, 11, {0.58, 0.54, 0.46}, "RIGHT")
@@ -629,7 +762,7 @@ local function CreateMinimapButton()
         if mouseButton == "RightButton" then
             WoWCurrencyDB.hideMinimap = true
             button:Hide()
-            print(GOLD .. "WoW Currency:" .. RESET .. " minimap button hidden. Type /wcurrency minimap to restore it.")
+            print(GOLD .. "WoW Currency:" .. RESET .. " minimap button hidden. Type /wc minimap to restore it.")
         else
             Addon:Toggle()
         end
@@ -677,22 +810,24 @@ local function HandleSlashCommand(message)
         print(GOLD .. "WoW Currency:" .. RESET .. " positions reset.")
     elseif command == "help" then
         print(GOLD .. "WoW Currency commands:" .. RESET)
-        print(WHITE .. "/wcurrency|r - toggle the currency window")
-        print(WHITE .. "/wcurrency minimap|r - show the minimap button")
-        print(WHITE .. "/wcurrency reset|r - reset window and minimap positions")
+        print(WHITE .. "/wc|r - toggle the currency window")
+        print(WHITE .. "/wc minimap|r - show the minimap button")
+        print(WHITE .. "/wc reset|r - reset window and minimap positions")
     else
         Addon:Toggle()
     end
 end
 
-SLASH_WOWCURRENCY1 = "/wcurrency"
-SLASH_WOWCURRENCY2 = "/wowcurrency"
+SLASH_WOWCURRENCY1 = "/wc"
 SlashCmdList.WOWCURRENCY = HandleSlashCommand
 
 local events = CreateFrame("Frame")
 events:RegisterEvent("ADDON_LOADED")
 events:RegisterEvent("PLAYER_ENTERING_WORLD")
 events:RegisterEvent("PLAYER_MONEY")
+events:RegisterEvent("ZONE_CHANGED")
+events:RegisterEvent("ZONE_CHANGED_INDOORS")
+events:RegisterEvent("ZONE_CHANGED_NEW_AREA")
 if C_CurrencyInfo or GetCurrencyListSize then
     events:RegisterEvent("CURRENCY_DISPLAY_UPDATE")
 end
@@ -702,6 +837,14 @@ events:SetScript("OnEvent", function(_, event, loadedAddon)
         if loadedAddon ~= ADDON_NAME then return end
         WoWCurrencyDB = WoWCurrencyDB or {}
         if WoWCurrencyDB.minimapAngle == nil then WoWCurrencyDB.minimapAngle = 225 end
+        WoWCurrencyDB.manualCategories = WoWCurrencyDB.manualCategories or {}
+        if WoWCurrencyDB.manualCategories["Features"] or WoWCurrencyDB.manualCategories["Season 2"] then
+            WoWCurrencyDB.manualCategories["Midnight"] = true
+            WoWCurrencyDB.manualCategories["Features"] = nil
+            WoWCurrencyDB.manualCategories["Season 2"] = nil
+        end
+        state.selectedCategories = WoWCurrencyDB.manualCategories
+        state.filterMode = WoWCurrencyDB.filterMode == "AUTO" and "AUTO" or "MANUAL"
         CreateMinimapButton()
         return
     end
@@ -717,6 +860,5 @@ events:SetScript("OnEvent", function(_, event, loadedAddon)
     end
 end)
 
--- Allow Escape to close the window when it has been created.
 UISpecialFrames = UISpecialFrames or {}
 table.insert(UISpecialFrames, "WoWCurrencyFrame")
