@@ -2,7 +2,7 @@
 ## Title: WoW Currency
 ## Notes: A currency dashboard for Retail, Classic Era, and Mists of Pandaria Classic.
 ## Author: Roadw2k
-## Version: 1.0.0
+## Version: 1.1.1
 ## SavedVariables: WoWCurrencyDB
 ## IconTexture: Interface\Icons\inv_10_fishing_dragonislescoins_bronze
 ## Category: Collections
